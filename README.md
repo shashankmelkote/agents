@@ -10,8 +10,10 @@
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cdk deploy
+cdk deploy -c sharedSecretName=jarvis/webhook/shared_secret
 ```
+
+The `sharedSecretName` context value defaults to `jarvis/webhook/shared_secret` if omitted. Override it with `-c sharedSecretName=...` to point at a different secret name.
 
 ## Test
 ```bash

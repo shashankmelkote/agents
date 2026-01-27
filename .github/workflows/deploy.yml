@@ -2,7 +2,7 @@ name: Deploy CDK
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch: {}
 
 permissions:
@@ -37,31 +37,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
-          echo "GITHUB_REF=${GITHUB_REF}"
-          echo "GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME}"
 
-          TOKEN_JSON=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          TOKEN_JSON=$(curl -sS -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
             "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
 
-          python - <<'PY'
+          python - <<'PY' <<< "$TOKEN_JSON"
 import json, sys, base64
 obj = json.load(sys.stdin)
 jwt = obj["value"]
 payload = jwt.split(".")[1]
 payload += "=" * (-len(payload) % 4)
-claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
+claims = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
 for k in ["iss","aud","sub","repository","ref","job_workflow_ref","environment"]:
     if k in claims:
         print(f"{k}={claims[k]}")
 PY
-          <<< "$TOKEN_JSON"
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
+          # Optional: avoids needing sts:TagSession in the trust policy
+          role-skip-session-tagging: true
 
       - name: CDK Bootstrap (idempotent)
         run: |

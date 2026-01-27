@@ -33,6 +33,30 @@ jobs:
           echo "GITHUB_WORKFLOW_REF=${GITHUB_WORKFLOW_REF}"
           echo "GITHUB_ACTOR=${GITHUB_ACTOR}"
 
+      - name: Debug OIDC token claims (sub/aud/iss)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GITHUB_REPOSITORY=${GITHUB_REPOSITORY}"
+          echo "GITHUB_REF=${GITHUB_REF}"
+          echo "GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME}"
+
+          TOKEN_JSON=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+
+          python - <<'PY'
+import json, sys, base64
+obj = json.load(sys.stdin)
+jwt = obj["value"]
+payload = jwt.split(".")[1]
+payload += "=" * (-len(payload) % 4)
+claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
+for k in ["iss","aud","sub","repository","ref","job_workflow_ref","environment"]:
+    if k in claims:
+        print(f"{k}={claims[k]}")
+PY
+          <<< "$TOKEN_JSON"
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:

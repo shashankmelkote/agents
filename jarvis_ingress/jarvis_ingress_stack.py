@@ -4,7 +4,9 @@ from aws_cdk import (
     Stack,
     aws_apigateway as apigateway,
     aws_lambda as _lambda,
+    aws_lambda_event_sources as lambda_event_sources,
     aws_secretsmanager as secretsmanager,
+    aws_sqs as sqs,
 )
 from constructs import Construct
 
@@ -19,12 +21,37 @@ class JarvisIngressStack(Stack):
             "jarvis/webhook/shared_secret",
         )
 
+        dead_letter_queue = sqs.Queue(
+            self,
+            "JarvisIngressDlq",
+        )
+        ingress_queue = sqs.Queue(
+            self,
+            "JarvisIngressQueue",
+            dead_letter_queue=sqs.DeadLetterQueue(
+                max_receive_count=5,
+                queue=dead_letter_queue,
+            ),
+        )
+
         router_fn = _lambda.Function(
             self,
             "RouterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="app.handler",
             code=_lambda.Code.from_asset("lambda/router"),
+            environment={"INGRESS_QUEUE_URL": ingress_queue.queue_url},
+        )
+
+        worker_fn = _lambda.Function(
+            self,
+            "WorkerFunction",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="app.handler",
+            code=_lambda.Code.from_asset("lambda/worker"),
+        )
+        worker_fn.add_event_source(
+            lambda_event_sources.SqsEventSource(ingress_queue)
         )
 
         authorizer_fn = _lambda.Function(
@@ -68,6 +95,8 @@ class JarvisIngressStack(Stack):
             authorizer=authorizer,
         )
 
+        ingress_queue.grant_send_messages(router_fn)
+
         CfnOutput(
             self,
             "IngressUrl",
@@ -77,4 +106,14 @@ class JarvisIngressStack(Stack):
             self,
             "WebhookSecretArn",
             value=shared_secret.secret_arn,
+        )
+        CfnOutput(
+            self,
+            "IngressQueueUrl",
+            value=ingress_queue.queue_url,
+        )
+        CfnOutput(
+            self,
+            "IngressQueueArn",
+            value=ingress_queue.queue_arn,
         )

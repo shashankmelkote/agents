@@ -1,6 +1,17 @@
 import base64
 import json
+import logging
+import os
 from typing import Any, Dict
+
+import boto3
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+sqs_client = boto3.client("sqs")
+QUEUE_URL = os.environ.get("INGRESS_QUEUE_URL")
 
 
 def _decode_body(event: Dict[str, Any]) -> str:
@@ -22,6 +33,15 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "requestId": request_id,
         "body": parsed_body,
     }
+
+    if QUEUE_URL:
+        try:
+            sqs_client.send_message(
+                QueueUrl=QUEUE_URL,
+                MessageBody=json.dumps(payload),
+            )
+        except Exception:
+            logger.exception("Failed to enqueue ingress event.")
 
     return {
         "statusCode": 200,

@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Dict
 
-import boto3
+from lambda.utils.crypto_utils import get_secret, hmac_sha256_hex
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
@@ -15,21 +15,6 @@ logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 def json_logger(level: str, msg: str, **fields):
     payload = {"msg": msg, **fields}
     getattr(logger, level)(json.dumps(payload, default=str))
-
-SECRET_CACHE: Dict[str, str] = {}
-
-
-def _get_secret(secret_name: str) -> str:
-    if secret_name in SECRET_CACHE:
-        return SECRET_CACHE[secret_name]
-    client = boto3.client("secretsmanager")
-    response = client.get_secret_value(SecretId=secret_name)
-    secret_value = response.get("SecretString")
-    if not secret_value:
-        raise ValueError("SecretString is empty")
-    SECRET_CACHE[secret_name] = secret_value
-    return secret_value
-
 
 def _allow_resource_from_method_arn(method_arn: str) -> str:
     if not method_arn or method_arn == "*":
@@ -49,14 +34,6 @@ def _allow_resource_from_method_arn(method_arn: str) -> str:
     return (
         f"arn:aws:execute-api:{region}:{account}:{api_id}/*/{http_verb}/{resource_path}"
     )
-
-
-def _hmac_sha256_hex(secret: str, payload: str) -> str:
-    return hmac.new(
-        secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
 
 
 def _policy(effect: str, resource: str) -> Dict[str, Any]:
@@ -123,10 +100,10 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
     try:
         secret_name = os.environ["SECRET_NAME"]
-        shared_secret = _get_secret(secret_name)
+        shared_secret = get_secret(secret_name)
 
         string_to_sign = f"{timestamp}.{method_arn}"
-        expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
+        expected_sig = hmac_sha256_hex(shared_secret, string_to_sign)
         provided_sig = signature or ""
 
         json_logger(

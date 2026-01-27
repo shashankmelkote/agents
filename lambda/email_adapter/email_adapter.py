@@ -1,5 +1,3 @@
-import hashlib
-import hmac
 import json
 import os
 import time
@@ -11,20 +9,9 @@ from urllib.request import Request, urlopen
 
 import boto3
 
-SECRET_CACHE: Dict[str, str] = {}
+from lambda.utils.crypto_utils import get_secret, hmac_sha256_hex
+
 ACCOUNT_ID_CACHE: Optional[str] = None
-
-
-def _get_secret(secret_name: str) -> str:
-    if secret_name in SECRET_CACHE:
-        return SECRET_CACHE[secret_name]
-    client = boto3.client("secretsmanager")
-    response = client.get_secret_value(SecretId=secret_name)
-    secret_value = response.get("SecretString")
-    if not secret_value:
-        raise ValueError("SecretString is empty")
-    SECRET_CACHE[secret_name] = secret_value
-    return secret_value
 
 
 def _get_account_id() -> str:
@@ -34,14 +21,6 @@ def _get_account_id() -> str:
     sts = boto3.client("sts")
     ACCOUNT_ID_CACHE = sts.get_caller_identity()["Account"]
     return ACCOUNT_ID_CACHE
-
-
-def _hmac_sha256_hex(secret: str, payload: str) -> str:
-    return hmac.new(
-        secret.encode("utf-8"),
-        payload.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
 
 
 def _extract_s3_location(event: Dict[str, Any]) -> Tuple[str, str]:
@@ -123,7 +102,7 @@ def _post_ingress(payload: Dict[str, Any], ingress_url: str, secret: str) -> Non
     timestamp = str(int(time.time()))
     body = json.dumps(payload, separators=(",", ":"))
     method_arn = _build_method_arn(ingress_url)
-    signature = _hmac_sha256_hex(secret, f"{timestamp}.{method_arn}")
+    signature = hmac_sha256_hex(secret, f"{timestamp}.{method_arn}")
 
     request = Request(
         ingress_url,
@@ -156,7 +135,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     }
 
     secret_name = os.environ["SECRET_NAME"]
-    shared_secret = _get_secret(secret_name)
+    shared_secret = get_secret(secret_name)
     ingress_url = os.environ["INGRESS_URL"]
     _post_ingress(payload, ingress_url, shared_secret)
 

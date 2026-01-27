@@ -3,9 +3,11 @@ from aws_cdk import (
     Duration,
     Stack,
     aws_apigateway as apigateway,
+    aws_iam as iam,
     aws_lambda as _lambda,
     aws_lambda_event_sources as lambda_event_sources,
     aws_s3 as s3,
+    aws_s3_notifications as s3n,
     aws_ses as ses,
     aws_ses_actions as ses_actions,
     aws_secretsmanager as secretsmanager,
@@ -49,6 +51,22 @@ class JarvisIngressStack(Stack):
                 max_receive_count=5,
                 queue=dead_letter_queue,
             ),
+        )
+        inbound_email_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.SqsDestination(ingress_queue),
+            s3.NotificationKeyFilter(prefix="inbound/"),
+        )
+        ingress_queue.add_to_resource_policy(
+            iam.PolicyStatement(
+                principals=[iam.ServicePrincipal("s3.amazonaws.com")],
+                actions=["sqs:SendMessage"],
+                resources=[ingress_queue.queue_arn],
+                conditions={
+                    "ArnLike": {"aws:SourceArn": inbound_email_bucket.bucket_arn},
+                    "StringEquals": {"aws:SourceAccount": "863388854740"},
+                },
+            )
         )
 
         router_fn = _lambda.Function(

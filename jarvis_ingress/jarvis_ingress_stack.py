@@ -137,7 +137,7 @@ class JarvisIngressStack(Stack):
                     bucket=inbound_email_bucket,
                     object_key_prefix="inbound/",
                 ),
-                ses_actions.Lambda(email_adapter_fn),
+                ses_actions.Lambda(function=email_adapter_fn),
             ],
         )
 

@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, Dict
 
-from handlers.utils.crypto_utils import get_secret, hmac_sha256_hex
+from utils.crypto_utils import get_secret, hmac_sha256_hex
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))

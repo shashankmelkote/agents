@@ -73,8 +73,8 @@ class JarvisIngressStack(Stack):
             self,
             "RouterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="ingress_router.handler",
-            code=_lambda.Code.from_asset("handlers/router"),
+            handler="router.ingress_router.handler",
+            code=_lambda.Code.from_asset("handlers"),
             environment={"INGRESS_QUEUE_URL": ingress_queue.queue_url},
         )
 
@@ -82,8 +82,8 @@ class JarvisIngressStack(Stack):
             self,
             "WorkerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="worker.handler",
-            code=_lambda.Code.from_asset("handlers/worker"),
+            handler="worker.sqs_worker.handler",
+            code=_lambda.Code.from_asset("handlers"),
         )
         worker_fn.add_event_source(
             lambda_event_sources.SqsEventSource(ingress_queue)
@@ -93,8 +93,8 @@ class JarvisIngressStack(Stack):
             self,
             "AuthorizerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="authorizer.handler",
-            code=_lambda.Code.from_asset("handlers/authorizer"),
+            handler="authorizer.authorizer.handler",
+            code=_lambda.Code.from_asset("handlers"),
             environment={
                 "SECRET_NAME": shared_secret.secret_name,
                 "MAX_SKEW_SECONDS": "300",
@@ -134,8 +134,8 @@ class JarvisIngressStack(Stack):
             self,
             "EmailAdapterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="email_adapter.handler",
-            code=_lambda.Code.from_asset("handlers/email_adapter"),
+            handler="email_adapter.email_adapter.handler",
+            code=_lambda.Code.from_asset("handlers"),
             environment={
                 "INGRESS_URL": f"{api.url}ingress",
                 "SECRET_ID": "jarvis/webhook/shared_secret",

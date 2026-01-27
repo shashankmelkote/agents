@@ -8,8 +8,13 @@ from typing import Any, Dict
 
 import boto3
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
+
+def json_logger(level: str, msg: str, **fields):
+    payload = {"msg": msg, **fields}
+    getattr(logger, level)(json.dumps(payload, default=str))
 
 SECRET_CACHE: Dict[str, str] = {}
 
@@ -81,21 +86,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     )
     allow_resource = _allow_resource_from_method_arn(method_arn)
 
-    logger.info(
+    json_logger(
+        "info",
         "authorizer_request",
-        extra={
-            "request_id": request_id,
-            "method_arn": method_arn,
-            "header_keys": list(headers_lc.keys()),
-        },
+        request_id=request_id,
+        method_arn=method_arn,
+        header_keys=list(headers_lc.keys()),
     )
 
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError):
-        logger.warning(
-            "authorizer_deny: invalid_timestamp",
-            extra={"request_id": request_id, "method_arn": method_arn},
+        json_logger(
+            "warning",
+            "authorizer_deny_invalid_timestamp",
+            request_id=request_id,
+            method_arn=method_arn,
         )
         return _policy("Deny", event["methodArn"])
 
@@ -106,14 +112,13 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # TODO: Revisit timestamp skew enforcement for replay protection once clients are stable.
     # For now, log skew for debugging but do not deny solely due to time drift.
     if skew > max_skew:
-        logger.warning(
-            "authorizer_warn: timestamp_skew",
-            extra={
-                "now_ts": now_ts,
-                "req_ts": timestamp_int,
-                "skew_seconds": skew,
-                "max_skew_seconds": max_skew,
-            },
+        json_logger(
+            "warning",
+            "authorizer_warn_timestamp_skew",
+            now_ts=now_ts,
+            req_ts=timestamp_int,
+            skew_seconds=skew,
+            max_skew_seconds=max_skew,
         )
 
     try:
@@ -124,35 +129,33 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
         provided_sig = signature or ""
 
-        logger.warning(
-            json.dumps(
-                {
-                    "msg": "authorizer_sig_debug",
-                    "methodArn": method_arn,
-                    "timestamp": timestamp_int,
-                    "string_to_sign_sha256": hashlib.sha256(
-                        string_to_sign.encode("utf-8")
-                    ).hexdigest(),
-                    "provided_sig_prefix": (provided_sig or "")[:8],
-                    "expected_sig_prefix": (expected_sig or "")[:8],
-                }
-            )
+        json_logger(
+            "warning",
+            "authorizer_sig_debug",
+            methodArn=method_arn,
+            timestamp=timestamp_int,
+            string_to_sign_sha256=hashlib.sha256(
+                string_to_sign.encode("utf-8")
+            ).hexdigest(),
+            provided_sig_prefix=(provided_sig or "")[:8],
+            expected_sig_prefix=(expected_sig or "")[:8],
         )
 
         if not hmac.compare_digest(expected_sig, provided_sig):
-            logger.warning(
-                "authorizer_deny: signature_mismatch",
-                extra={
-                    "request_id": request_id,
-                    "method_arn": method_arn,
-                    "signature_prefix": (signature or "")[:8],
-                },
+            json_logger(
+                "warning",
+                "authorizer_deny_signature_mismatch",
+                request_id=request_id,
+                method_arn=method_arn,
+                signature_prefix=(signature or "")[:8],
             )
             return _policy("Deny", event["methodArn"])
     except Exception:
-        logger.exception(
+        json_logger(
+            "exception",
             "authorizer_exception",
-            extra={"request_id": request_id, "method_arn": method_arn},
+            request_id=request_id,
+            method_arn=method_arn,
         )
         return _policy("Deny", event["methodArn"])
 

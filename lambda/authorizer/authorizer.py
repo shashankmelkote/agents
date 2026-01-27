@@ -99,12 +99,21 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         return _policy("Deny", event["methodArn"])
 
     max_skew = int(os.environ.get("MAX_SKEW_SECONDS", "300"))
-    if abs(int(time.time()) - timestamp_int) > max_skew:
+    now_ts = int(time.time())
+    skew = abs(now_ts - timestamp_int)
+
+    # TODO: Revisit timestamp skew enforcement for replay protection once clients are stable.
+    # For now, log skew for debugging but do not deny solely due to time drift.
+    if skew > max_skew:
         logger.warning(
-            "authorizer_deny: timestamp_skew",
-            extra={"request_id": request_id, "method_arn": method_arn},
+            "authorizer_warn: timestamp_skew",
+            extra={
+                "now_ts": now_ts,
+                "req_ts": timestamp_int,
+                "skew_seconds": skew,
+                "max_skew_seconds": max_skew,
+            },
         )
-        return _policy("Deny", event["methodArn"])
 
     try:
         secret_name = os.environ["SECRET_NAME"]

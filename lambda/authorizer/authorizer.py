@@ -1,10 +1,14 @@
 import hashlib
 import hmac
+import logging
 import os
 import time
 from typing import Any, Dict
 
 import boto3
+
+logger = logging.getLogger()
+logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
 
 SECRET_CACHE: Dict[str, str] = {}
 
@@ -69,24 +73,61 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     timestamp = headers_lc.get("x-jarvis-timestamp")
     signature = headers_lc.get("x-jarvis-signature")
     method_arn = event.get("methodArn", "")
+    request_id = (
+        event.get("requestContext", {}).get("requestId")
+        or event.get("requestId")
+        or ""
+    )
     allow_resource = _allow_resource_from_method_arn(method_arn)
+
+    logger.info(
+        "authorizer_request",
+        extra={
+            "request_id": request_id,
+            "method_arn": method_arn,
+            "header_keys": list(headers_lc.keys()),
+        },
+    )
 
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError):
+        logger.warning(
+            "authorizer_deny: invalid_timestamp",
+            extra={"request_id": request_id, "method_arn": method_arn},
+        )
         return _policy("Deny", event["methodArn"])
 
     max_skew = int(os.environ.get("MAX_SKEW_SECONDS", "300"))
     if abs(int(time.time()) - timestamp_int) > max_skew:
+        logger.warning(
+            "authorizer_deny: timestamp_skew",
+            extra={"request_id": request_id, "method_arn": method_arn},
+        )
         return _policy("Deny", event["methodArn"])
 
-    secret_name = os.environ["SECRET_NAME"]
-    shared_secret = _get_secret(secret_name)
+    try:
+        secret_name = os.environ["SECRET_NAME"]
+        shared_secret = _get_secret(secret_name)
 
-    string_to_sign = f"{timestamp}.{method_arn}"
-    expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
+        string_to_sign = f"{timestamp}.{method_arn}"
+        expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
 
-    if not hmac.compare_digest(expected_sig, signature or ""):
+        if not hmac.compare_digest(expected_sig, signature or ""):
+            logger.warning(
+                "authorizer_deny: signature_mismatch",
+                extra={
+                    "request_id": request_id,
+                    "method_arn": method_arn,
+                    "signature_prefix": (signature or "")[:8],
+                },
+            )
+            return _policy("Deny", event["methodArn"])
+    except Exception:
+        logger.exception(
+            "authorizer_exception",
+            extra={"request_id": request_id, "method_arn": method_arn},
+        )
         return _policy("Deny", event["methodArn"])
 
     return _policy("Allow", allow_resource)

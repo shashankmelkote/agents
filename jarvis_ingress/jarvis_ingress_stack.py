@@ -73,7 +73,7 @@ class JarvisIngressStack(Stack):
             self,
             "RouterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="app.handler",
+            handler="ingress_router.handler",
             code=_lambda.Code.from_asset("lambda/router"),
             environment={"INGRESS_QUEUE_URL": ingress_queue.queue_url},
         )
@@ -82,7 +82,7 @@ class JarvisIngressStack(Stack):
             self,
             "WorkerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="app.handler",
+            handler="worker.handler",
             code=_lambda.Code.from_asset("lambda/worker"),
         )
         worker_fn.add_event_source(
@@ -93,7 +93,7 @@ class JarvisIngressStack(Stack):
             self,
             "AuthorizerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="app.handler",
+            handler="authorizer.handler",
             code=_lambda.Code.from_asset("lambda/authorizer"),
             environment={
                 "SECRET_NAME": shared_secret.secret_name,
@@ -134,7 +134,7 @@ class JarvisIngressStack(Stack):
             self,
             "EmailAdapterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="app.handler",
+            handler="email_adapter.handler",
             code=_lambda.Code.from_asset("lambda/email_adapter"),
             environment={
                 "INGRESS_URL": f"{api.url}ingress",

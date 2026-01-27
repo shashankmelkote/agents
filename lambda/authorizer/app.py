@@ -29,13 +29,24 @@ def _decode_body(event: Dict[str, Any]) -> str:
     return body
 
 
-def _get_header(headers: Dict[str, str], key: str) -> str:
-    if not headers:
-        return ""
-    for header_key, value in headers.items():
-        if header_key.lower() == key.lower():
-            return value
-    return ""
+def _wildcard_stage_resource(method_arn: str) -> str:
+    if not method_arn or method_arn == "*":
+        return method_arn or "*"
+    arn_parts = method_arn.split(":", 5)
+    if len(arn_parts) != 6:
+        return method_arn
+    region = arn_parts[3]
+    account = arn_parts[4]
+    resource = arn_parts[5]
+    resource_parts = resource.split("/", 3)
+    if len(resource_parts) < 3:
+        return method_arn
+    api_id = resource_parts[0]
+    http_verb = resource_parts[2]
+    resource_path = resource_parts[3] if len(resource_parts) > 3 else ""
+    return (
+        f"arn:aws:execute-api:{region}:{account}:{api_id}/*/{http_verb}/{resource_path}"
+    )
 
 
 def _policy(effect: str, resource: str) -> Dict[str, Any]:
@@ -52,18 +63,21 @@ def _policy(effect: str, resource: str) -> Dict[str, Any]:
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     headers = event.get("headers") or {}
-    timestamp = _get_header(headers, "x-jarvis-timestamp")
-    signature = _get_header(headers, "x-jarvis-signature")
-    method_arn = event.get("methodArn", "*")
+    headers_lc = {key.lower(): value for key, value in headers.items() if key}
+    timestamp = headers_lc.get("x-jarvis-timestamp", "")
+    signature = headers_lc.get("x-jarvis-signature", "")
+    method_arn = event.get("methodArn") or "*"
+    allow_resource = _wildcard_stage_resource(method_arn)
+    deny_resource = method_arn if method_arn != "*" else allow_resource
 
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError):
-        return _policy("Deny", method_arn)
+        return _policy("Deny", deny_resource)
 
     max_skew = int(os.environ.get("MAX_SKEW_SECONDS", "300"))
     if abs(int(time.time()) - timestamp_int) > max_skew:
-        return _policy("Deny", method_arn)
+        return _policy("Deny", deny_resource)
 
     raw_body = _decode_body(event)
     secret_name = os.environ["SECRET_NAME"]
@@ -77,6 +91,6 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     ).hexdigest()
 
     if not hmac.compare_digest(expected_sig, signature or ""):
-        return _policy("Deny", method_arn)
+        return _policy("Deny", deny_resource)
 
-    return _policy("Allow", method_arn)
+    return _policy("Allow", allow_resource)

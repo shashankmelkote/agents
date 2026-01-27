@@ -43,25 +43,24 @@ jobs:
 
           echo "$TOKEN_JSON" > /tmp/oidc_token.json
 
-          python - <<'PY'
+          python -c '
 import json, base64
-with open("/tmp/oidc_token.json", "r") as f:
-    obj = json.load(f)
-jwt = obj["value"]
-payload = jwt.split(".")[1]
+with open("/tmp/oidc_token.json","r") as f:
+    obj=json.load(f)
+jwt=obj["value"]
+payload=jwt.split(".")[1]
 payload += "=" * (-len(payload) % 4)
-claims = json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
+claims=json.loads(base64.urlsafe_b64decode(payload.encode("utf-8")))
 for k in ["iss","aud","sub","repository","ref","job_workflow_ref","environment"]:
     if k in claims:
         print(f"{k}={claims[k]}")
-PY
+'
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION }}
-          # Optional: avoids needing sts:TagSession in the trust policy
           role-skip-session-tagging: true
 
       - name: CDK Bootstrap (idempotent)

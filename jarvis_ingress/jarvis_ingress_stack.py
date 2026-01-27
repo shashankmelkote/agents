@@ -120,7 +120,6 @@ class JarvisIngressStack(Stack):
             code=_lambda.Code.from_asset("lambda/email_adapter"),
             environment={
                 "INGRESS_URL": f"{api.url}ingress",
-                "AWS_REGION": Stack.of(self).region,
                 "SECRET_ID": "jarvis/webhook/shared_secret",
                 "SECRET_NAME": shared_secret.secret_name,
             },

@@ -8,7 +8,12 @@ import boto3
 
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
+
+
+def json_logger(level: str, msg: str, **fields):
+    payload = {"msg": msg, **fields}
+    getattr(logger, level)(json.dumps(payload, default=str))
 
 sqs_client = boto3.client("sqs")
 QUEUE_URL = os.environ.get("INGRESS_QUEUE_URL")
@@ -41,7 +46,12 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 MessageBody=json.dumps(payload),
             )
         except Exception:
-            logger.exception("Failed to enqueue ingress event.")
+            json_logger(
+                "exception",
+                "ingress_enqueue_failed",
+                request_id=request_id,
+                queue_url=QUEUE_URL,
+            )
 
     return {
         "statusCode": 200,

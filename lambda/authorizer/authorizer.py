@@ -121,8 +121,22 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         string_to_sign = f"{timestamp}.{method_arn}"
         expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
+        provided_sig = signature or ""
 
-        if not hmac.compare_digest(expected_sig, signature or ""):
+        logger.warning(
+            "authorizer_sig_debug",
+            extra={
+                "methodArn": method_arn,
+                "timestamp": timestamp_int,
+                "string_to_sign_sha256": hashlib.sha256(
+                    string_to_sign.encode("utf-8")
+                ).hexdigest(),
+                "provided_sig_prefix": provided_sig[:8],
+                "expected_sig_prefix": (expected_sig or "")[:8],
+            },
+        )
+
+        if not hmac.compare_digest(expected_sig, provided_sig):
             logger.warning(
                 "authorizer_deny: signature_mismatch",
                 extra={

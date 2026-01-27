@@ -1,10 +1,14 @@
 from aws_cdk import (
     CfnOutput,
+    CfnParameter,
     Duration,
     Stack,
     aws_apigateway as apigateway,
     aws_lambda as _lambda,
     aws_lambda_event_sources as lambda_event_sources,
+    aws_s3 as s3,
+    aws_ses as ses,
+    aws_ses_actions as ses_actions,
     aws_secretsmanager as secretsmanager,
     aws_sqs as sqs,
 )
@@ -19,6 +23,11 @@ class JarvisIngressStack(Stack):
             self,
             "JarvisWebhookSharedSecret",
             "jarvis/webhook/shared_secret",
+        )
+
+        inbound_email_bucket = s3.Bucket(
+            self,
+            "JarvisInboundEmailBucket",
         )
 
         dead_letter_queue = sqs.Queue(
@@ -95,6 +104,43 @@ class JarvisIngressStack(Stack):
             authorizer=authorizer,
         )
 
+        email_adapter_fn = _lambda.Function(
+            self,
+            "EmailAdapterFunction",
+            runtime=_lambda.Runtime.PYTHON_3_11,
+            handler="app.handler",
+            code=_lambda.Code.from_asset("lambda/email_adapter"),
+            environment={
+                "INGRESS_URL": f"{api.url}ingress",
+                "SECRET_NAME": shared_secret.secret_name,
+            },
+        )
+        inbound_email_bucket.grant_read(email_adapter_fn)
+        shared_secret.grant_read(email_adapter_fn)
+
+        email_domain = CfnParameter(
+            self,
+            "InboundEmailDomain",
+            type="String",
+            description="Domain for inbound email (e.g. example.com).",
+        )
+
+        receipt_rule_set = ses.ReceiptRuleSet(
+            self,
+            "JarvisInboundReceiptRuleSet",
+        )
+        receipt_rule_set.add_rule(
+            "JarvisInboundEmailRule",
+            recipients=[f"jarvis@{email_domain.value_as_string}"],
+            actions=[
+                ses_actions.S3(
+                    bucket=inbound_email_bucket,
+                    object_key_prefix="inbound/",
+                ),
+                ses_actions.Lambda(email_adapter_fn),
+            ],
+        )
+
         ingress_queue.grant_send_messages(router_fn)
 
         CfnOutput(
@@ -116,4 +162,9 @@ class JarvisIngressStack(Stack):
             self,
             "IngressQueueArn",
             value=ingress_queue.queue_arn,
+        )
+        CfnOutput(
+            self,
+            "InboundReceiptRuleSetName",
+            value=receipt_rule_set.receipt_rule_set_name,
         )

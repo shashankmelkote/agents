@@ -44,6 +44,9 @@ class JarvisIngressStack(Stack):
             self,
             "JarvisIngressApi",
             deploy_options=apigateway.StageOptions(stage_name="dev"),
+            default_method_options=apigateway.MethodOptions(
+                authorization_type=apigateway.AuthorizationType.NONE,
+            ),
         )
 
         authorizer = apigateway.RequestAuthorizer(

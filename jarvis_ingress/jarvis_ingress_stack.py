@@ -1,6 +1,5 @@
 from aws_cdk import (
     CfnOutput,
-    CfnParameter,
     Duration,
     Stack,
     aws_apigateway as apigateway,
@@ -18,6 +17,15 @@ from constructs import Construct
 class JarvisIngressStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        jarvis_domain = self.node.try_get_context("jarvisDomain")
+        jarvis_email = self.node.try_get_context("jarvisEmail")
+
+        if not jarvis_domain or not jarvis_email:
+            raise ValueError(
+                "Missing CDK context: jarvisDomain and/or jarvisEmail. "
+                "Set them in cdk.json or via -c."
+            )
 
         shared_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
@@ -118,20 +126,13 @@ class JarvisIngressStack(Stack):
         inbound_email_bucket.grant_read(email_adapter_fn)
         shared_secret.grant_read(email_adapter_fn)
 
-        email_domain = CfnParameter(
-            self,
-            "InboundEmailDomain",
-            type="String",
-            description="Domain for inbound email (e.g. example.com).",
-        )
-
         receipt_rule_set = ses.ReceiptRuleSet(
             self,
             "JarvisInboundReceiptRuleSet",
         )
         receipt_rule_set.add_rule(
             "JarvisInboundEmailRule",
-            recipients=[f"jarvis@{email_domain.value_as_string}"],
+            recipients=[jarvis_email],
             actions=[
                 ses_actions.S3(
                     bucket=inbound_email_bucket,
@@ -162,6 +163,16 @@ class JarvisIngressStack(Stack):
             self,
             "IngressQueueArn",
             value=ingress_queue.queue_arn,
+        )
+        CfnOutput(
+            self,
+            "JarvisDomain",
+            value=jarvis_domain,
+        )
+        CfnOutput(
+            self,
+            "JarvisEmail",
+            value=jarvis_email,
         )
         CfnOutput(
             self,

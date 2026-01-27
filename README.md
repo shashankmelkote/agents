@@ -37,3 +37,8 @@ curl -X POST "$(cdk output JarvisIngressStack.IngressUrl)" \
   -H "Content-Type: application/json" \
   -d "$BODY"
 ```
+
+## Acceptance Test
+- Without headers: `POST /ingress` should return 401/403 (missing/invalid signature).
+- With correct headers: `POST /ingress` should return 200 and the Router Lambda should be invoked.
+- The request should succeed with only the HMAC headers (no AWS credentials required).

@@ -1,4 +1,3 @@
-import base64
 import hashlib
 import hmac
 import os
@@ -22,14 +21,7 @@ def _get_secret(secret_name: str) -> str:
     return secret_value
 
 
-def _decode_body(event: Dict[str, Any]) -> str:
-    body = event.get("body") or ""
-    if event.get("isBase64Encoded"):
-        return base64.b64decode(body).decode("utf-8")
-    return body
-
-
-def _wildcard_stage_resource(method_arn: str) -> str:
+def _allow_resource_from_method_arn(method_arn: str) -> str:
     if not method_arn or method_arn == "*":
         return method_arn or "*"
     arn_parts = method_arn.split(":", 5)
@@ -49,6 +41,14 @@ def _wildcard_stage_resource(method_arn: str) -> str:
     )
 
 
+def _hmac_sha256_hex(secret: str, payload: str) -> str:
+    return hmac.new(
+        secret.encode("utf-8"),
+        payload.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
 def _policy(effect: str, resource: str) -> Dict[str, Any]:
     return {
         "principalId": "jarvis-webhook",
@@ -63,34 +63,30 @@ def _policy(effect: str, resource: str) -> Dict[str, Any]:
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     headers = event.get("headers") or {}
-    headers_lc = {key.lower(): value for key, value in headers.items() if key}
-    timestamp = headers_lc.get("x-jarvis-timestamp", "")
-    signature = headers_lc.get("x-jarvis-signature", "")
-    method_arn = event.get("methodArn") or "*"
-    allow_resource = _wildcard_stage_resource(method_arn)
-    deny_resource = method_arn if method_arn != "*" else allow_resource
+    headers_lc = {
+        str(key).lower(): value for key, value in headers.items() if key is not None
+    }
+    timestamp = headers_lc.get("x-jarvis-timestamp")
+    signature = headers_lc.get("x-jarvis-signature")
+    method_arn = event.get("methodArn", "")
+    allow_resource = _allow_resource_from_method_arn(method_arn)
 
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError):
-        return _policy("Deny", deny_resource)
+        return _policy("Deny", event["methodArn"])
 
     max_skew = int(os.environ.get("MAX_SKEW_SECONDS", "300"))
     if abs(int(time.time()) - timestamp_int) > max_skew:
-        return _policy("Deny", deny_resource)
+        return _policy("Deny", event["methodArn"])
 
-    raw_body = _decode_body(event)
     secret_name = os.environ["SECRET_NAME"]
     shared_secret = _get_secret(secret_name)
 
-    signed_payload = f"{timestamp}.{raw_body}".encode("utf-8")
-    expected_sig = hmac.new(
-        shared_secret.encode("utf-8"),
-        signed_payload,
-        hashlib.sha256,
-    ).hexdigest()
+    string_to_sign = f"{timestamp}.{method_arn}"
+    expected_sig = _hmac_sha256_hex(shared_secret, string_to_sign)
 
     if not hmac.compare_digest(expected_sig, signature or ""):
-        return _policy("Deny", deny_resource)
+        return _policy("Deny", event["methodArn"])
 
     return _policy("Allow", allow_resource)

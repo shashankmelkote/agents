@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 
 import boto3
 
-from lambda.utils.crypto_utils import get_secret, hmac_sha256_hex
+from handlers.utils.crypto_utils import get_secret, hmac_sha256_hex
 
 ACCOUNT_ID_CACHE: Optional[str] = None
 

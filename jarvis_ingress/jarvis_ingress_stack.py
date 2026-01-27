@@ -22,6 +22,11 @@ class JarvisIngressStack(Stack):
 
         jarvis_domain = self.node.try_get_context("jarvisDomain")
         jarvis_email = self.node.try_get_context("jarvisEmail")
+        shared_secret_name = (
+            self.node.try_get_context("sharedSecretName")
+            or "jarvis/webhook/shared_secret"
+        )
+        account_id = Stack.of(self).account
 
         if not jarvis_domain or not jarvis_email:
             raise ValueError(
@@ -32,7 +37,7 @@ class JarvisIngressStack(Stack):
         shared_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
             "JarvisWebhookSharedSecret",
-            "jarvis/webhook/shared_secret",
+            shared_secret_name,
         )
 
         inbound_email_bucket = s3.Bucket(
@@ -64,7 +69,7 @@ class JarvisIngressStack(Stack):
                 resources=[ingress_queue.queue_arn],
                 conditions={
                     "ArnLike": {"aws:SourceArn": inbound_email_bucket.bucket_arn},
-                    "StringEquals": {"aws:SourceAccount": "863388854740"},
+                    "StringEquals": {"aws:SourceAccount": account_id},
                 },
             )
         )
@@ -96,7 +101,7 @@ class JarvisIngressStack(Stack):
             handler="authorizer.authorizer.handler",
             code=_lambda.Code.from_asset("handlers"),
             environment={
-                "SECRET_NAME": shared_secret.secret_name,
+                "SECRET_NAME": shared_secret_name,
                 "MAX_SKEW_SECONDS": "300",
             },
         )
@@ -138,8 +143,7 @@ class JarvisIngressStack(Stack):
             code=_lambda.Code.from_asset("handlers"),
             environment={
                 "INGRESS_URL": f"{api.url}ingress",
-                "SECRET_ID": "jarvis/webhook/shared_secret",
-                "SECRET_NAME": shared_secret.secret_name,
+                "SECRET_NAME": shared_secret_name,
             },
         )
         inbound_email_bucket.grant_read(email_adapter_fn)

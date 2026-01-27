@@ -5,6 +5,7 @@ from jarvis_ingress.jarvis_ingress_stack import JarvisIngressStack
 
 
 def test_stack_resources():
+    shared_secret_name = "jarvis/webhook/shared_secret"
     app = cdk.App()
     stack = JarvisIngressStack(
         app,
@@ -28,7 +29,7 @@ def test_stack_resources():
     template.has_resource_properties(
         "AWS::SecretsManager::Secret",
         {
-            "Name": "jarvis/webhook/shared_secret",
+            "Name": shared_secret_name,
         },
     )
 

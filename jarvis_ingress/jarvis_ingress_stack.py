@@ -13,10 +13,10 @@ class JarvisIngressStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        shared_secret = secretsmanager.Secret(
+        shared_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
             "JarvisWebhookSharedSecret",
-            secret_name="jarvis/webhook/shared_secret",
+            "jarvis/webhook/shared_secret",
         )
 
         router_fn = _lambda.Function(

@@ -65,6 +65,23 @@ The stack reads the following **context keys** (exact names):
 - `sesReceiptRuleSetName` (default: `jarvis-inbound-rules`)
 - `sharedSecretName` (default: `jarvis/webhook/shared_secret`)
 
+You can supply these values either via `-c key=value` on the CLI (shown above) or by adding them to `cdk.json` under the `context` block. For example:
+
+```json
+{
+  "app": "python3 app.py",
+  "context": {
+    "inboundEmailDomain": "example.com",
+    "jarvisLocalPart": "jarvis",
+    "jarvisDomain": "example.com",
+    "sesReceiptRuleSetName": "jarvis-inbound-rules",
+    "sharedSecretName": "jarvis/webhook/shared_secret"
+  }
+}
+```
+
+If you only set `jarvisEmail` in `cdk.json`, the stack will still use the default `inboundEmailDomain` because the stack does not read `jarvisEmail`.
+
 ### GitHub Actions Secrets (OIDC)
 The deploy workflow requires:
 - `AWS_ROLE_ARN`
@@ -101,6 +118,33 @@ aws cloudformation describe-stacks \
 - **Body**: JSON payload, e.g. `{ "source": "postman", "message": "hello" }`
 
 In the API Gateway console, open `JarvisIngressApi` → `/ingress` → `POST` and use **Test** with the headers above.
+
+**Postman step-by-step**
+1. Create a new **POST** request and set the URL to the `IngressUrl` output.
+2. In **Headers**, add:
+   - `x-jarvis-timestamp`: `{{timestamp}}`
+   - `x-jarvis-signature`: `{{signature}}`
+   - `Content-Type`: `application/json`
+3. In **Body → raw → JSON**, use a payload such as:
+   ```json
+   { "source": "postman", "message": "hello" }
+   ```
+4. In **Pre-request Script**, compute the signature (set your secret + URL once as environment vars):
+   ```javascript
+   const timestamp = Math.floor(Date.now() / 1000).toString();
+   const ingressUrl = pm.environment.get("ingress_url");
+   const secret = pm.environment.get("shared_secret");
+   const parsed = new URL(ingressUrl);
+   const apiId = parsed.hostname.split(".")[0];
+   const stage = parsed.pathname.replace(/^\\//, "").split("/")[0];
+   const region = "us-east-1";
+   const accountId = pm.environment.get("account_id");
+   const methodArn = `arn:aws:execute-api:${region}:${accountId}:${apiId}/${stage}/POST/ingress`;
+   const signature = CryptoJS.HmacSHA256(`${timestamp}.${methodArn}`, secret).toString();
+   pm.environment.set("timestamp", timestamp);
+   pm.environment.set("signature", signature);
+   ```
+5. Send the request and confirm a **200** response and a body containing the echoed payload.
 
 ### Test with curl (HMAC signature)
 The authorizer signs **exactly**: `timestamp + "." + methodArn`.

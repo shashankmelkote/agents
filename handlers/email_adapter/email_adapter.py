@@ -9,8 +9,10 @@ from urllib.parse import unquote_plus, urlparse
 from urllib.request import Request, urlopen
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
-from utils.crypto_utils import get_secret, hmac_sha256_hex
+from utils.crypto_utils import hmac_sha256_hex
 
 ACCOUNT_ID_CACHE: Optional[str] = None
 LOGGER = logging.getLogger(__name__)
@@ -120,6 +122,71 @@ def _build_method_arn(ingress_url: str) -> str:
         f"arn:aws:execute-api:{region}:{account_id}:{api_id}"
         f"/{stage}/POST/{resource_path}"
     )
+
+
+def _fetch_secret(
+    secret_name: str,
+    aws_request_id: str,
+) -> str:
+    config = Config(
+        connect_timeout=2,
+        read_timeout=3,
+        retries={"max_attempts": 2, "mode": "standard"},
+    )
+    client = boto3.client("secretsmanager", config=config)
+    secret_start = time.time()
+    try:
+        response = client.get_secret_value(SecretId=secret_name)
+    except Exception as exc:
+        error_code = ""
+        error_message = ""
+        if isinstance(exc, ClientError):
+            error = exc.response.get("Error", {})
+            error_code = error.get("Code", "")
+            error_message = error.get("Message", "")
+        duration_ms = int((time.time() - secret_start) * 1000)
+        emit_metric("SecretFetchFailure", 1)
+        emit_metric("SecretFetchDurationMs", duration_ms, "Milliseconds")
+        _log_json(
+            logging.WARNING,
+            "email_adapter_secret_fetch_fail",
+            aws_request_id=aws_request_id,
+            secret_name=secret_name,
+            duration_ms=duration_ms,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            aws_error_code=error_code,
+            aws_error_message=error_message,
+        )
+        raise
+    secret_value = response.get("SecretString")
+    if not secret_value:
+        duration_ms = int((time.time() - secret_start) * 1000)
+        emit_metric("SecretFetchFailure", 1)
+        emit_metric("SecretFetchDurationMs", duration_ms, "Milliseconds")
+        _log_json(
+            logging.WARNING,
+            "email_adapter_secret_fetch_fail",
+            aws_request_id=aws_request_id,
+            secret_name=secret_name,
+            duration_ms=duration_ms,
+            error_type="ValueError",
+            error_message="SecretString is empty",
+            aws_error_code="",
+            aws_error_message="",
+        )
+        raise ValueError("SecretString is empty")
+    duration_ms = int((time.time() - secret_start) * 1000)
+    emit_metric("SecretFetchSuccess", 1)
+    emit_metric("SecretFetchDurationMs", duration_ms, "Milliseconds")
+    _log_json(
+        logging.INFO,
+        "email_adapter_secret_fetch_ok",
+        aws_request_id=aws_request_id,
+        secret_name=secret_name,
+        duration_ms=duration_ms,
+    )
+    return secret_value
 
 
 def _post_ingress(
@@ -281,44 +348,23 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             error_logged = True
             raise
 
-        secret_start = time.time()
-        _log_json(
-            logging.INFO,
-            "email_adapter_secret_fetch_start",
-            aws_request_id=aws_request_id,
-            bucket=bucket,
-            key=decoded_key,
-            message_id=message_id,
-            duration_ms=int((secret_start - start_time) * 1000),
-            secret_name=secret_name,
-        )
-        try:
-            shared_secret = get_secret(secret_name)
-        except Exception as exc:
-            emit_metric("SecretFetchFailure", 1)
-            _log_exception(
-                "email_adapter_error",
+        remaining_ms = getattr(context, "get_remaining_time_in_millis", lambda: 10000)()
+        if remaining_ms < 4000:
+            _log_json(
+                logging.WARNING,
+                "email_adapter_abort_low_time",
                 aws_request_id=aws_request_id,
                 bucket=bucket,
                 key=decoded_key,
                 message_id=message_id,
-                duration_ms=int((time.time() - secret_start) * 1000),
-                error_type=type(exc).__name__,
-                error_message=str(exc),
+                duration_ms=int((time.time() - start_time) * 1000),
+                remaining_ms=remaining_ms,
             )
-            error_logged = True
-            raise
-        emit_metric("SecretFetchSuccess", 1)
-        _log_json(
-            logging.INFO,
-            "email_adapter_secret_fetch_ok",
-            aws_request_id=aws_request_id,
-            bucket=bucket,
-            key=decoded_key,
-            message_id=message_id,
-            duration_ms=int((time.time() - secret_start) * 1000),
-            secret_name=secret_name,
-        )
+            raise RuntimeError("Aborting secret fetch due to low remaining time")
+
+        # TODO: If Lambda runs in a VPC, ensure NAT or a VPC interface endpoint for
+        # Secrets Manager; otherwise calls may hang.
+        shared_secret = _fetch_secret(secret_name, aws_request_id)
 
         publish_start = time.time()
         ingress_host = urlparse(ingress_url).hostname or ""

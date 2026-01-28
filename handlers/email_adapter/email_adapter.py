@@ -122,7 +122,12 @@ def _build_method_arn(ingress_url: str) -> str:
     )
 
 
-def _post_ingress(payload: Dict[str, Any], ingress_url: str, secret: str) -> None:
+def _post_ingress(
+    payload: Dict[str, Any],
+    ingress_url: str,
+    secret: str,
+    timeout_seconds: int,
+) -> Tuple[int, str]:
     timestamp = str(int(time.time()))
     body = json.dumps(payload, separators=(",", ":"))
     method_arn = _build_method_arn(ingress_url)
@@ -139,8 +144,10 @@ def _post_ingress(payload: Dict[str, Any], ingress_url: str, secret: str) -> Non
         },
     )
 
-    with urlopen(request) as response:
-        response.read()
+    with urlopen(request, timeout=timeout_seconds) as response:
+        response_body = response.read()
+        response_prefix = response_body[:256].decode(errors="replace")
+        return response.getcode(), response_prefix
 
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -230,6 +237,20 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             duration_ms=int((time.time() - start_time) * 1000),
         )
 
+        has_secret_name_env = bool(os.environ.get("SECRET_NAME"))
+        has_ingress_url_env = bool(os.environ.get("INGRESS_URL"))
+        _log_json(
+            logging.INFO,
+            "email_adapter_config_loaded",
+            aws_request_id=aws_request_id,
+            bucket=bucket,
+            key=decoded_key,
+            message_id=message_id,
+            duration_ms=int((time.time() - start_time) * 1000),
+            has_secret_name_env=has_secret_name_env,
+            has_ingress_url_env=has_ingress_url_env,
+        )
+
         payload = {
             "source": "email",
             "from": parsed_email["from"],
@@ -238,13 +259,105 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "s3": {"bucket": bucket, "key": decoded_key},
         }
 
-        secret_name = os.environ["SECRET_NAME"]
-        shared_secret = get_secret(secret_name)
-        ingress_url = os.environ["INGRESS_URL"]
         try:
-            _post_ingress(payload, ingress_url, shared_secret)
+            secret_name = os.environ["SECRET_NAME"]
+            ingress_url = os.environ["INGRESS_URL"]
+            if not secret_name:
+                raise ValueError("SECRET_NAME is empty")
+            if not ingress_url:
+                raise ValueError("INGRESS_URL is empty")
+        except (KeyError, ValueError) as exc:
+            emit_metric("ConfigError", 1)
+            _log_exception(
+                "email_adapter_error",
+                aws_request_id=aws_request_id,
+                bucket=bucket,
+                key=decoded_key,
+                message_id=message_id,
+                duration_ms=int((time.time() - start_time) * 1000),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            error_logged = True
+            raise
+
+        secret_start = time.time()
+        _log_json(
+            logging.INFO,
+            "email_adapter_secret_fetch_start",
+            aws_request_id=aws_request_id,
+            bucket=bucket,
+            key=decoded_key,
+            message_id=message_id,
+            duration_ms=int((secret_start - start_time) * 1000),
+            secret_name=secret_name,
+        )
+        try:
+            shared_secret = get_secret(secret_name)
         except Exception as exc:
-            emit_metric("IngressPublishFailure", 1)
+            emit_metric("SecretFetchFailure", 1)
+            _log_exception(
+                "email_adapter_error",
+                aws_request_id=aws_request_id,
+                bucket=bucket,
+                key=decoded_key,
+                message_id=message_id,
+                duration_ms=int((time.time() - secret_start) * 1000),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            error_logged = True
+            raise
+        emit_metric("SecretFetchSuccess", 1)
+        _log_json(
+            logging.INFO,
+            "email_adapter_secret_fetch_ok",
+            aws_request_id=aws_request_id,
+            bucket=bucket,
+            key=decoded_key,
+            message_id=message_id,
+            duration_ms=int((time.time() - secret_start) * 1000),
+            secret_name=secret_name,
+        )
+
+        publish_start = time.time()
+        ingress_host = urlparse(ingress_url).hostname or ""
+        _log_json(
+            logging.INFO,
+            "email_adapter_publish_start",
+            aws_request_id=aws_request_id,
+            bucket=bucket,
+            key=decoded_key,
+            message_id=message_id,
+            duration_ms=int((publish_start - start_time) * 1000),
+            ingress_host=ingress_host,
+        )
+        remaining_ms = getattr(context, "get_remaining_time_in_millis", lambda: 10000)()
+        timeout_seconds = min(10, max(1, remaining_ms // 1000 - 1))
+        publish_failure_emitted = False
+        try:
+            status_code, response_prefix = _post_ingress(
+                payload, ingress_url, shared_secret, timeout_seconds
+            )
+            _log_json(
+                logging.INFO,
+                "email_adapter_publish_response",
+                aws_request_id=aws_request_id,
+                bucket=bucket,
+                key=decoded_key,
+                message_id=message_id,
+                duration_ms=int((time.time() - publish_start) * 1000),
+                status_code=status_code,
+                response_body_prefix=response_prefix,
+            )
+            if not 200 <= status_code < 300:
+                emit_metric("IngressResponseNon2xx", 1)
+                emit_metric("IngressPublishFailure", 1)
+                publish_failure_emitted = True
+                raise RuntimeError(f"Ingress responded with status {status_code}")
+        except Exception as exc:
+            if not publish_failure_emitted:
+                emit_metric("IngressPublishFailure", 1)
             _log_exception(
                 "email_adapter_error",
                 aws_request_id=aws_request_id,

@@ -163,11 +163,17 @@ class JarvisIngressStack(Stack):
         )
         inbound_email_bucket.grant_read(email_adapter_fn)
         shared_secret.grant_read(email_adapter_fn)
+        inbound_email_bucket.add_event_notification(
+            s3.EventType.OBJECT_CREATED,
+            s3n.LambdaDestination(email_adapter_fn),
+            s3.NotificationKeyFilter(prefix="inbound/"),
+        )
         email_adapter_fn.add_permission(
-            "AllowSesInvoke",
-            principal=iam.ServicePrincipal("ses.amazonaws.com"),
+            "AllowS3Invoke",
+            principal=iam.ServicePrincipal("s3.amazonaws.com"),
             action="lambda:InvokeFunction",
             source_account=account_id,
+            source_arn=inbound_email_bucket.bucket_arn,
         )
 
         receipt_rule_set = ses.ReceiptRuleSet(
@@ -183,7 +189,6 @@ class JarvisIngressStack(Stack):
                     bucket=inbound_email_bucket,
                     object_key_prefix="inbound/",
                 ),
-                ses_actions.Lambda(function=email_adapter_fn),
             ],
         )
         ses_activation = cr.AwsCustomResource(

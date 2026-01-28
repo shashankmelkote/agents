@@ -1,46 +1,209 @@
 # Jarvis Ingress (AWS CDK v2)
 
-## Prerequisites
-- Python 3.11
-- AWS CDK v2 (`npm install -g aws-cdk`)
-- AWS credentials configured for `us-east-1`
+## Architecture Overview
+This stack provides a signed ingress API backed by SQS and an email ingestion path via SES + S3.
 
-## Deploy
+**Webhook flow**
+1. External webhooks call **API Gateway REST API** `POST /ingress`.
+2. A **Lambda Request Authorizer** validates HMAC headers `x-jarvis-timestamp` and `x-jarvis-signature`.
+3. The **ingress/router Lambda** enqueues work to **SQS**.
+4. A **Worker Lambda** consumes SQS and performs actions.
+
+**Email flow**
+1. **SES inbound email** for `jarvis@<domain>` stores raw mail in **S3**.
+2. **S3 ObjectCreated notifications** trigger the **Email Adapter Lambda** (not SES LambdaAction).
+3. The Email Adapter reads the `.eml` from S3, normalizes it, and calls `POST /ingress` with the same HMAC headers.
+
+```mermaid
+flowchart LR
+  subgraph Webhooks
+    Webhook[External Webhook] --> APIGW[API Gateway\nPOST /ingress]
+    APIGW -->|Request Authorizer| Auth[Lambda Authorizer\nHMAC check]
+    APIGW --> Router[Ingress Router Lambda]
+    Router --> SQS[SQS Queue]
+    SQS --> Worker[Worker Lambda]
+  end
+
+  subgraph Email
+    Sender[Email Sender] --> SES[SES Inbound Email\njarvis@<domain>]
+    SES --> S3[S3 Bucket\nraw .eml]
+    S3 -->|ObjectCreated: ses-inbound/| Adapter[Email Adapter Lambda]
+    Adapter --> APIGW
+  end
+```
+
+## Setup
+
+### Prerequisites
+- Python 3.11
+- Node.js (for AWS CDK v2)
+- AWS credentials configured for **us-east-1**
+
+### Bootstrap + Deploy
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-cdk deploy -c sharedSecretName=jarvis/webhook/shared_secret
+
+# One-time bootstrap per account/region
+npx -y aws-cdk@2.x bootstrap aws://$ACCOUNT_ID/us-east-1
+
+# Deploy (set context values as needed)
+cdk deploy \
+  -c inboundEmailDomain=example.com \
+  -c jarvisLocalPart=jarvis \
+  -c jarvisDomain=example.com \
+  -c sesReceiptRuleSetName=jarvis-inbound-rules \
+  -c sharedSecretName=jarvis/webhook/shared_secret
 ```
 
-The `sharedSecretName` context value defaults to `jarvis/webhook/shared_secret` if omitted. Override it with `-c sharedSecretName=...` to point at a different secret name.
+### Configuration (CDK context keys)
+The stack reads the following **context keys** (exact names):
+- `inboundEmailDomain` (default: `jarvisassistants.ai`)
+- `jarvisLocalPart` (default: `jarvis`)
+- `jarvisDomain` (default: `inboundEmailDomain`)
+- `sesReceiptRuleSetName` (default: `jarvis-inbound-rules`)
+- `sharedSecretName` (default: `jarvis/webhook/shared_secret`)
 
-## Test
-```bash
-pip install -r requirements-dev.txt
-pytest
+You can supply these values either via `-c key=value` on the CLI (shown above) or by adding them to `cdk.json` under the `context` block. For example:
+
+```json
+{
+  "app": "python3 app.py",
+  "context": {
+    "inboundEmailDomain": "example.com",
+    "jarvisLocalPart": "jarvis",
+    "jarvisDomain": "example.com",
+    "sesReceiptRuleSetName": "jarvis-inbound-rules",
+    "sharedSecretName": "jarvis/webhook/shared_secret"
+  }
+}
 ```
 
-## Curl Example
+If you only set `jarvisEmail` in `cdk.json`, the stack will still use the default `inboundEmailDomain` because the stack does not read `jarvisEmail`.
+
+### GitHub Actions Secrets (OIDC)
+The deploy workflow requires:
+- `AWS_ROLE_ARN`
+- `AWS_REGION`
+
+The role must trust the GitHub OIDC provider and allow the repo/workflow to assume it (ensure the trust policy matches your GitHub org/repo and branch or environment).
+
+## SES + Route 53 (Operational Steps)
+1. **Register domain** (or choose an existing domain) and create a **Route 53 hosted zone**.
+2. **Delegate nameservers** from the registrar to the Route 53 hosted zone.
+3. **Create SES identity** for the domain and enable **DKIM** (Route 53 adds the CNAMEs).
+4. **Create/verify MX record** in Route 53 to point inbound mail to SES for `us-east-1`.
+5. **Confirm SES verification and DKIM status** are both verified before sending inbound mail.
+
+## Testing
+
+### Find the API endpoint
+From CDK:
 ```bash
-SECRET_VALUE="your-shared-secret"
+cdk output JarvisIngressStack.IngressUrl
+```
+From CloudFormation:
+```bash
+aws cloudformation describe-stacks \
+  --stack-name JarvisIngressStack \
+  --query "Stacks[0].Outputs[?OutputKey=='IngressUrl'].OutputValue" \
+  --output text
+```
+
+### Test via AWS Console or Postman
+- **Headers**:
+  - `x-jarvis-timestamp`: unix epoch seconds
+  - `x-jarvis-signature`: HMAC SHA-256 hex of `timestamp + "." + methodArn`
+- **Body**: JSON payload, e.g. `{ "source": "postman", "message": "hello" }`
+
+In the API Gateway console, open `JarvisIngressApi` → `/ingress` → `POST` and use **Test** with the headers above.
+
+**Postman step-by-step**
+1. Create a new **POST** request and set the URL to the `IngressUrl` output.
+2. In **Headers**, add:
+   - `x-jarvis-timestamp`: `{{timestamp}}`
+   - `x-jarvis-signature`: `{{signature}}`
+   - `Content-Type`: `application/json`
+3. In **Body → raw → JSON**, use a payload such as:
+   ```json
+   { "source": "postman", "message": "hello" }
+   ```
+4. In **Pre-request Script**, compute the signature (set your secret + URL once as environment vars):
+   ```javascript
+   const timestamp = Math.floor(Date.now() / 1000).toString();
+   const ingressUrl = pm.environment.get("ingress_url");
+   const secret = pm.environment.get("shared_secret");
+   const parsed = new URL(ingressUrl);
+   const apiId = parsed.hostname.split(".")[0];
+   const stage = parsed.pathname.replace(/^\\//, "").split("/")[0];
+   const region = "us-east-1";
+   const accountId = pm.environment.get("account_id");
+   const methodArn = `arn:aws:execute-api:${region}:${accountId}:${apiId}/${stage}/POST/ingress`;
+   const signature = CryptoJS.HmacSHA256(`${timestamp}.${methodArn}`, secret).toString();
+   pm.environment.set("timestamp", timestamp);
+   pm.environment.set("signature", signature);
+   ```
+5. Send the request and confirm a **200** response and a body containing the echoed payload.
+
+### Test with curl (HMAC signature)
+The authorizer signs **exactly**: `timestamp + "." + methodArn`.
+`methodArn` format:
+`arn:aws:execute-api:{region}:{account}:{api_id}/{stage}/POST/ingress`
+
+```bash
+INGRESS_URL=$(cdk output JarvisIngressStack.IngressUrl)
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+REGION=us-east-1
 TIMESTAMP=$(date +%s)
-BODY='{"hello":"world"}'
+SECRET_VALUE="your-shared-secret"
+
+METHOD_ARN=$(python3 - <<'PY'
+from urllib.parse import urlparse
+import os
+u = urlparse(os.environ["INGRESS_URL"])
+api_id = (u.hostname or "").split(".")[0]
+stage = u.path.strip("/").split("/")[0]
+print(f"arn:aws:execute-api:{os.environ['REGION']}:{os.environ['ACCOUNT_ID']}:{api_id}/{stage}/POST/ingress")
+PY
+)
+
 SIGNATURE=$(python3 - <<'PY'
 import hmac, hashlib, os
-payload = f"{os.environ['TIMESTAMP']}.{os.environ['BODY']}".encode()
+payload = f"{os.environ['TIMESTAMP']}.{os.environ['METHOD_ARN']}".encode()
 print(hmac.new(os.environ['SECRET_VALUE'].encode(), payload, hashlib.sha256).hexdigest())
 PY
 )
 
-curl -X POST "$(cdk output JarvisIngressStack.IngressUrl)" \
+curl -X POST "$INGRESS_URL" \
   -H "x-jarvis-timestamp: $TIMESTAMP" \
   -H "x-jarvis-signature: $SIGNATURE" \
   -H "Content-Type: application/json" \
-  -d "$BODY"
+  -d '{"source":"curl","hello":"world"}'
 ```
 
-## Acceptance Test
-- Without headers: `POST /ingress` should return 401/403 (missing/invalid signature).
-- With correct headers: `POST /ingress` should return 200 and the Router Lambda should be invoked.
-- The request should succeed with only the HMAC headers (no AWS credentials required).
+### Test S3 → Email Adapter Lambda
+1. Find the inbound bucket:
+   ```bash
+   cdk output JarvisIngressStack.InboundEmailBucketName
+   ```
+2. Upload a raw email to the inbound prefix:
+   ```bash
+   aws s3 cp ./sample.eml s3://$BUCKET/ses-inbound/sample.eml
+   ```
+3. Confirm CloudWatch logs for `EmailAdapterFunction` show `email_adapter_publish_ok`.
+
+### End-to-end email test
+1. Send an email to `jarvis@jarvisassistants.ai` (or your configured domain).
+2. Confirm the `.eml` lands in `s3://<InboundEmailBucketName>/ses-inbound/`.
+3. Confirm `EmailAdapterFunction` logs show the POST to `/ingress` succeeded.
+4. Confirm an SQS message arrives in `IngressQueue` (or worker logs show `sqs_records_received`).
+5. Confirm `WorkerFunction` logs show the record payload.
+
+## Troubleshooting
+- **OIDC assume-role failures**: ensure the IAM role trust policy includes your GitHub org/repo and branch/environment in the `sub` condition, and that `AWS_ROLE_ARN` + `AWS_REGION` secrets are set in GitHub Actions.
+- **Reserved `AWS_REGION` Lambda env var**: Lambda reserves `AWS_REGION` (provided automatically). Avoid setting it manually in function environment variables.
+- **S3 bucket notification overlap**: S3 cannot have overlapping prefixes/suffixes across notifications. Keep distinct prefixes (this stack uses `ses-inbound/` and `ingress-queue/`).
+- **Authorizer failures**:
+  - Timestamp skew logs are warnings only, but large drift may indicate a clock issue.
+  - Signature mismatch: confirm the string to sign is `timestamp.methodArn`, the method ARN matches the deployed API ID/stage/resource, and the secret matches `sharedSecretName` in Secrets Manager.

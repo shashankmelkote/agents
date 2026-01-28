@@ -6,12 +6,14 @@ from aws_cdk import (
     aws_iam as iam,
     aws_lambda as _lambda,
     aws_lambda_event_sources as lambda_event_sources,
+    aws_logs as logs,
     aws_s3 as s3,
     aws_s3_notifications as s3n,
     aws_ses as ses,
     aws_ses_actions as ses_actions,
     aws_secretsmanager as secretsmanager,
     aws_sqs as sqs,
+    custom_resources as cr,
 )
 from constructs import Construct
 
@@ -20,19 +22,24 @@ class JarvisIngressStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        jarvis_domain = self.node.try_get_context("jarvisDomain")
-        jarvis_email = self.node.try_get_context("jarvisEmail")
+        inbound_email_domain = (
+            self.node.try_get_context("inboundEmailDomain")
+            or "jarvisassistants.ai"
+        )
+        jarvis_local_part = (
+            self.node.try_get_context("jarvisLocalPart") or "jarvis"
+        )
+        jarvis_domain = self.node.try_get_context("jarvisDomain") or inbound_email_domain
+        jarvis_email = f"{jarvis_local_part}@{inbound_email_domain}"
+        ses_receipt_rule_set_name = (
+            self.node.try_get_context("sesReceiptRuleSetName")
+            or "jarvis-inbound-rules"
+        )
         shared_secret_name = (
             self.node.try_get_context("sharedSecretName")
             or "jarvis/webhook/shared_secret"
         )
         account_id = Stack.of(self).account
-
-        if not jarvis_domain or not jarvis_email:
-            raise ValueError(
-                "Missing CDK context: jarvisDomain and/or jarvisEmail. "
-                "Set them in cdk.json or via -c."
-            )
 
         shared_secret = secretsmanager.Secret.from_secret_name_v2(
             self,
@@ -43,6 +50,14 @@ class JarvisIngressStack(Stack):
         inbound_email_bucket = s3.Bucket(
             self,
             "JarvisInboundEmailBucket",
+        )
+        inbound_email_bucket.add_to_resource_policy(
+            iam.PolicyStatement(
+                principals=[iam.ServicePrincipal("ses.amazonaws.com")],
+                actions=["s3:PutObject"],
+                resources=[f"{inbound_email_bucket.bucket_arn}/inbound/*"],
+                conditions={"StringEquals": {"aws:SourceAccount": account_id}},
+            )
         )
 
         dead_letter_queue = sqs.Queue(
@@ -148,10 +163,17 @@ class JarvisIngressStack(Stack):
         )
         inbound_email_bucket.grant_read(email_adapter_fn)
         shared_secret.grant_read(email_adapter_fn)
+        email_adapter_fn.add_permission(
+            "AllowSesInvoke",
+            principal=iam.ServicePrincipal("ses.amazonaws.com"),
+            action="lambda:InvokeFunction",
+            source_account=account_id,
+        )
 
         receipt_rule_set = ses.ReceiptRuleSet(
             self,
             "JarvisInboundReceiptRuleSet",
+            receipt_rule_set_name=ses_receipt_rule_set_name,
         )
         receipt_rule_set.add_rule(
             "JarvisInboundEmailRule",
@@ -164,6 +186,31 @@ class JarvisIngressStack(Stack):
                 ses_actions.Lambda(function=email_adapter_fn),
             ],
         )
+        ses_activation = cr.AwsCustomResource(
+            self,
+            "ActivateSesReceiptRuleSet",
+            on_create=cr.AwsSdkCall(
+                service="SES",
+                action="setActiveReceiptRuleSet",
+                parameters={"RuleSetName": ses_receipt_rule_set_name},
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    f"activate-ses-ruleset-{ses_receipt_rule_set_name}"
+                ),
+            ),
+            on_update=cr.AwsSdkCall(
+                service="SES",
+                action="setActiveReceiptRuleSet",
+                parameters={"RuleSetName": ses_receipt_rule_set_name},
+                physical_resource_id=cr.PhysicalResourceId.of(
+                    f"activate-ses-ruleset-{ses_receipt_rule_set_name}"
+                ),
+            ),
+            policy=cr.AwsCustomResourcePolicy.from_sdk_calls(
+                resources=cr.AwsCustomResourcePolicy.ANY_RESOURCE
+            ),
+            log_retention=logs.RetentionDays.ONE_WEEK,
+        )
+        ses_activation.node.add_dependency(receipt_rule_set)
 
         ingress_queue.grant_send_messages(router_fn)
 
@@ -201,4 +248,14 @@ class JarvisIngressStack(Stack):
             self,
             "InboundReceiptRuleSetName",
             value=receipt_rule_set.receipt_rule_set_name,
+        )
+        CfnOutput(
+            self,
+            "InboundRecipientEmail",
+            value=jarvis_email,
+        )
+        CfnOutput(
+            self,
+            "InboundEmailBucketName",
+            value=inbound_email_bucket.bucket_name,
         )

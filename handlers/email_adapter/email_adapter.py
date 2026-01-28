@@ -1,10 +1,11 @@
 import json
+import logging
 import os
 import time
 from email import policy
 from email.parser import BytesParser
 from typing import Any, Dict, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote_plus, urlparse
 from urllib.request import Request, urlopen
 
 import boto3
@@ -12,6 +13,8 @@ import boto3
 from utils.crypto_utils import get_secret, hmac_sha256_hex
 
 ACCOUNT_ID_CACHE: Optional[str] = None
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
 
 
 def _get_account_id() -> str:
@@ -26,31 +29,13 @@ def _get_account_id() -> str:
 def _extract_s3_location(event: Dict[str, Any]) -> Tuple[str, str]:
     records = event.get("Records") or []
     for record in records:
-        if "s3" in record:
-            bucket = record["s3"]["bucket"]["name"]
-            key = record["s3"]["object"]["key"]
+        s3 = record.get("s3")
+        if s3:
+            bucket = s3["bucket"]["name"]
+            key = s3["object"]["key"]
             return bucket, key
 
-        ses = record.get("ses") or {}
-        receipt = ses.get("receipt") or {}
-        action = receipt.get("action") or {}
-        bucket = action.get("bucketName") or action.get("bucket")
-        key = action.get("objectKey") or action.get("objectKeyName")
-        if bucket and key:
-            return bucket, key
-
-        prefix = action.get("objectKeyPrefix") or ""
-        message_id = (ses.get("mail") or {}).get("messageId")
-        if bucket and message_id:
-            key = f"{prefix}{message_id}"
-            return bucket, key
-
-    bucket = event.get("bucket")
-    key = event.get("key")
-    if bucket and key:
-        return bucket, key
-
-    raise ValueError("Unable to determine S3 bucket/key from SES event")
+    raise ValueError("Expected S3 ObjectCreated event with Records[].s3 data")
 
 
 def _get_email_text(message) -> str:
@@ -121,8 +106,16 @@ def _post_ingress(payload: Dict[str, Any], ingress_url: str, secret: str) -> Non
 
 def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     bucket, key = _extract_s3_location(event)
+    decoded_key = unquote_plus(key)
+    message_id = os.path.basename(decoded_key) if decoded_key else ""
+    LOGGER.info(
+        "Processing inbound email from S3 bucket=%s key=%s messageId=%s",
+        bucket,
+        decoded_key,
+        message_id,
+    )
     s3_client = boto3.client("s3")
-    response = s3_client.get_object(Bucket=bucket, Key=key)
+    response = s3_client.get_object(Bucket=bucket, Key=decoded_key)
     raw_email = response["Body"].read()
 
     parsed_email = _parse_email(raw_email)
@@ -131,7 +124,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         "from": parsed_email["from"],
         "subject": parsed_email["subject"],
         "text": parsed_email["text"],
-        "s3": {"bucket": bucket, "key": key},
+        "s3": {"bucket": bucket, "key": decoded_key},
     }
 
     secret_name = os.environ["SECRET_NAME"]

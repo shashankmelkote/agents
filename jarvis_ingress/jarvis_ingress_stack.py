@@ -102,8 +102,8 @@ class JarvisIngressStack(Stack):
             self,
             "WorkerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="worker.sqs_worker.handler",
-            code=_lambda.Code.from_asset("handlers"),
+            handler="worker.handler",
+            code=_lambda.Code.from_asset("handlers/worker"),
         )
         worker_fn.add_event_source(
             lambda_event_sources.SqsEventSource(ingress_queue)

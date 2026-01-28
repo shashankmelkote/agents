@@ -55,7 +55,7 @@ class JarvisIngressStack(Stack):
             iam.PolicyStatement(
                 principals=[iam.ServicePrincipal("ses.amazonaws.com")],
                 actions=["s3:PutObject"],
-                resources=[f"{inbound_email_bucket.bucket_arn}/inbound/*"],
+                resources=[f"{inbound_email_bucket.bucket_arn}/ses-inbound/*"],
                 conditions={"StringEquals": {"aws:SourceAccount": account_id}},
             )
         )
@@ -75,7 +75,7 @@ class JarvisIngressStack(Stack):
         inbound_email_bucket.add_event_notification(
             s3.EventType.OBJECT_CREATED,
             s3n.SqsDestination(ingress_queue),
-            s3.NotificationKeyFilter(prefix="inbound/"),
+            s3.NotificationKeyFilter(prefix="ingress-queue/"),
         )
         ingress_queue.add_to_resource_policy(
             iam.PolicyStatement(
@@ -166,7 +166,7 @@ class JarvisIngressStack(Stack):
         inbound_email_bucket.add_event_notification(
             s3.EventType.OBJECT_CREATED,
             s3n.LambdaDestination(email_adapter_fn),
-            s3.NotificationKeyFilter(prefix="inbound/"),
+            s3.NotificationKeyFilter(prefix="ses-inbound/"),
         )
         email_adapter_fn.add_permission(
             "AllowS3Invoke",
@@ -187,7 +187,7 @@ class JarvisIngressStack(Stack):
             actions=[
                 ses_actions.S3(
                     bucket=inbound_email_bucket,
-                    object_key_prefix="inbound/",
+                    object_key_prefix="ses-inbound/",
                 ),
             ],
         )

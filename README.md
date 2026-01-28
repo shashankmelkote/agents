@@ -194,7 +194,7 @@ curl -X POST "$INGRESS_URL" \
 3. Confirm CloudWatch logs for `EmailAdapterFunction` show `email_adapter_publish_ok`.
 
 ### End-to-end email test
-1. Send an email to `jarvis@<inboundEmailDomain>`.
+1. Send an email to `jarvis@jarvisassistants.ai` (or your configured domain).
 2. Confirm the `.eml` lands in `s3://<InboundEmailBucketName>/ses-inbound/`.
 3. Confirm `EmailAdapterFunction` logs show the POST to `/ingress` succeeded.
 4. Confirm an SQS message arrives in `IngressQueue` (or worker logs show `sqs_records_received`).

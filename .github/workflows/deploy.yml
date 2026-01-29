@@ -104,8 +104,14 @@ jobs:
           name: coverage
           path: .
 
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
       - uses: actions/upload-pages-artifact@v3
         with:
+          name: coverage-pages-${{ github.run_id }}
           path: htmlcov
 
       - uses: actions/deploy-pages@v4
+        with:
+          artifact_name: coverage-pages-${{ github.run_id }}

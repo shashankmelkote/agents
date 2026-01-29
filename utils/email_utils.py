@@ -1,4 +1,5 @@
 from email import policy
+from email.utils import parseaddr
 from email.parser import BytesParser
 from typing import Dict
 
@@ -32,3 +33,8 @@ def parse_raw_email(raw_bytes: bytes) -> Dict[str, str]:
         "subject": message.get("Subject", ""),
         "text": _get_email_text(message),
     }
+
+
+def parse_sender_email(value: str) -> str:
+    _, email = parseaddr(value)
+    return email or value

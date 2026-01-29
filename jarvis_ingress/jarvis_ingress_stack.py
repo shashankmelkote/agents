@@ -117,9 +117,29 @@ class JarvisIngressStack(Stack):
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="handlers.worker.worker.handler",
             code=lambda_code,
+            environment={
+                "CALENDAR_PROVIDER": "google",
+                "GOOGLE_OAUTH_CLIENT_SECRET_NAME": "jarvis/google_oauth/client",
+                "GOOGLE_OAUTH_USER_SECRET_PREFIX": "jarvis/calendar/google/",
+                "DEFAULT_TIME_ZONE": "America/New_York",
+            },
         )
         worker_fn.add_event_source(
             lambda_event_sources.SqsEventSource(ingress_queue)
+        )
+        worker_client_secret = secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "WorkerGoogleOauthClientSecret",
+            "jarvis/google_oauth/client",
+        )
+        worker_client_secret.grant_read(worker_fn)
+        worker_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[
+                    f"arn:aws:secretsmanager:{Stack.of(self).region}:{account_id}:secret:jarvis/calendar/google/*",
+                ],
+            )
         )
 
         authorizer_fn = _lambda.Function(

@@ -11,7 +11,7 @@ def test_worker_handler_logs_records(monkeypatch):
 
     result = worker.handler(event, context={})
 
-    assert result == {"status": "ok"}
+    assert result == {"status": "ok", "records": []}
     assert len(log_calls) == 3
 
 

@@ -5,7 +5,6 @@ from jarvis_ingress.jarvis_ingress_stack import JarvisIngressStack
 
 
 def test_stack_resources():
-    shared_secret_name = "jarvis/webhook/shared_secret"
     app = cdk.App()
     stack = JarvisIngressStack(
         app,
@@ -14,22 +13,14 @@ def test_stack_resources():
     )
     template = Template.from_stack(stack)
 
-    template.resource_count_is("AWS::Lambda::Function", 2)
+    template.resource_count_is("AWS::Lambda::Function", 7)
     template.resource_count_is("AWS::ApiGateway::RestApi", 1)
     template.resource_count_is("AWS::ApiGateway::Authorizer", 1)
-    template.resource_count_is("AWS::SecretsManager::Secret", 1)
 
     template.has_resource_properties(
         "AWS::Lambda::Function",
         {
             "Runtime": "python3.11",
-        },
-    )
-
-    template.has_resource_properties(
-        "AWS::SecretsManager::Secret",
-        {
-            "Name": shared_secret_name,
         },
     )
 

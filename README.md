@@ -97,6 +97,7 @@ The role must trust the GitHub OIDC provider and allow the repo/workflow to assu
 5. **Confirm SES verification and DKIM status** are both verified before sending inbound mail.
 
 ## Testing
+The HTML coverage report is published to GitHub Pages at `https://<owner>.github.io/jarvis-ingress/` and updates on each merge to `main` (Settings → Pages → Source: GitHub Actions).
 
 ### Find the API endpoint
 From CDK:

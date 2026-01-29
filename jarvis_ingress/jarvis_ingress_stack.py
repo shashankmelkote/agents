@@ -156,6 +156,8 @@ class JarvisIngressStack(Stack):
             runtime=_lambda.Runtime.PYTHON_3_11,
             handler="email_adapter.email_adapter.handler",
             code=_lambda.Code.from_asset("handlers"),
+            memory_size=512,
+            timeout=Duration.seconds(30),
             environment={
                 "INGRESS_URL": f"{api.url}ingress",
                 "SECRET_NAME": shared_secret_name,

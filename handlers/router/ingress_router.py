@@ -1,19 +1,13 @@
 import base64
 import json
-import logging
 import os
 from typing import Any, Dict
 
 import boto3
 
+from utils.observability import get_logger, log_exception
 
-logger = logging.getLogger(__name__)
-logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
-
-
-def json_logger(level: str, msg: str, **fields):
-    payload = {"msg": msg, **fields}
-    getattr(logger, level)(json.dumps(payload, default=str))
+logger = get_logger(__name__)
 
 sqs_client = boto3.client("sqs")
 QUEUE_URL = os.environ.get("INGRESS_QUEUE_URL")
@@ -46,8 +40,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
                 MessageBody=json.dumps(payload),
             )
         except Exception:
-            json_logger(
-                "exception",
+            log_exception(
+                logger,
                 "ingress_enqueue_failed",
                 request_id=request_id,
                 queue_url=QUEUE_URL,

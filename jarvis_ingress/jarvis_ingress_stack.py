@@ -89,12 +89,25 @@ class JarvisIngressStack(Stack):
             )
         )
 
+        lambda_code = _lambda.Code.from_asset(
+            ".",
+            exclude=[
+                "cdk.out",
+                "tests",
+                ".venv",
+                "__pycache__",
+                ".git",
+                ".pytest_cache",
+                "*.pyc",
+            ],
+        )
+
         router_fn = _lambda.Function(
             self,
             "RouterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="router.ingress_router.handler",
-            code=_lambda.Code.from_asset("handlers"),
+            handler="handlers.router.ingress_router.handler",
+            code=lambda_code,
             environment={"INGRESS_QUEUE_URL": ingress_queue.queue_url},
         )
 
@@ -102,8 +115,8 @@ class JarvisIngressStack(Stack):
             self,
             "WorkerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="worker.handler",
-            code=_lambda.Code.from_asset("handlers/worker"),
+            handler="handlers.worker.worker.handler",
+            code=lambda_code,
         )
         worker_fn.add_event_source(
             lambda_event_sources.SqsEventSource(ingress_queue)
@@ -113,8 +126,8 @@ class JarvisIngressStack(Stack):
             self,
             "AuthorizerFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="authorizer.authorizer.handler",
-            code=_lambda.Code.from_asset("handlers"),
+            handler="handlers.authorizer.authorizer.handler",
+            code=lambda_code,
             environment={
                 "SECRET_NAME": shared_secret_name,
                 "MAX_SKEW_SECONDS": "300",
@@ -154,8 +167,8 @@ class JarvisIngressStack(Stack):
             self,
             "EmailAdapterFunction",
             runtime=_lambda.Runtime.PYTHON_3_11,
-            handler="email_adapter.email_adapter.handler",
-            code=_lambda.Code.from_asset("handlers"),
+            handler="handlers.email_adapter.email_adapter.handler",
+            code=lambda_code,
             memory_size=512,
             timeout=Duration.seconds(30),
             environment={

@@ -1,20 +1,13 @@
 import hashlib
-import json
 import hmac
-import logging
 import os
 import time
 from typing import Any, Dict
 
 from utils.crypto_utils import get_secret, hmac_sha256_hex
+from utils.observability import get_logger, log_exception, log_json
 
-logger = logging.getLogger(__name__)
-logger.setLevel(os.getenv("LOG_LEVEL", "INFO"))
-
-
-def json_logger(level: str, msg: str, **fields):
-    payload = {"msg": msg, **fields}
-    getattr(logger, level)(json.dumps(payload, default=str))
+logger = get_logger(__name__)
 
 def _allow_resource_from_method_arn(method_arn: str) -> str:
     if not method_arn or method_arn == "*":
@@ -63,7 +56,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     )
     allow_resource = _allow_resource_from_method_arn(method_arn)
 
-    json_logger(
+    log_json(
+        logger,
         "info",
         "authorizer_request",
         request_id=request_id,
@@ -74,7 +68,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     try:
         timestamp_int = int(timestamp)
     except (TypeError, ValueError):
-        json_logger(
+        log_json(
+            logger,
             "warning",
             "authorizer_deny_invalid_timestamp",
             request_id=request_id,
@@ -89,7 +84,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     # TODO: Revisit timestamp skew enforcement for replay protection once clients are stable.
     # For now, log skew for debugging but do not deny solely due to time drift.
     if skew > max_skew:
-        json_logger(
+        log_json(
+            logger,
             "warning",
             "authorizer_warn_timestamp_skew",
             now_ts=now_ts,
@@ -106,7 +102,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         expected_sig = hmac_sha256_hex(shared_secret, string_to_sign)
         provided_sig = signature or ""
 
-        json_logger(
+        log_json(
+            logger,
             "warning",
             "authorizer_sig_debug",
             methodArn=method_arn,
@@ -119,7 +116,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
 
         if not hmac.compare_digest(expected_sig, provided_sig):
-            json_logger(
+            log_json(
+                logger,
                 "warning",
                 "authorizer_deny_signature_mismatch",
                 request_id=request_id,
@@ -128,8 +126,8 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             )
             return _policy("Deny", event["methodArn"])
     except Exception:
-        json_logger(
-            "exception",
+        log_exception(
+            logger,
             "authorizer_exception",
             request_id=request_id,
             method_arn=method_arn,

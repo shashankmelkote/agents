@@ -15,6 +15,9 @@ from botocore.exceptions import ClientError
 from utils.crypto_utils import hmac_sha256_hex
 
 ACCOUNT_ID_CACHE: Optional[str] = None
+_CACHED_SECRET_VALUE: Optional[str] = None
+_CACHED_SECRET_FETCHED_AT: Optional[float] = None
+SECRET_CACHE_TTL_SECONDS = 900
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 
@@ -185,6 +188,46 @@ def _fetch_secret(
         aws_request_id=aws_request_id,
         secret_name=secret_name,
         duration_ms=duration_ms,
+    )
+    return secret_value
+
+
+def _get_shared_secret(
+    secret_name: str,
+    aws_request_id: str,
+) -> str:
+    global _CACHED_SECRET_VALUE
+    global _CACHED_SECRET_FETCHED_AT
+    now = time.time()
+    if _CACHED_SECRET_VALUE and _CACHED_SECRET_FETCHED_AT:
+        cache_age = now - _CACHED_SECRET_FETCHED_AT
+        if cache_age < SECRET_CACHE_TTL_SECONDS:
+            duration_ms = int((time.time() - now) * 1000)
+            _log_json(
+                logging.INFO,
+                "email_adapter_secret_cache_hit",
+                aws_request_id=aws_request_id,
+                secret_name=secret_name,
+                duration_ms=duration_ms,
+                cache_age_ms=int(cache_age * 1000),
+            )
+            return _CACHED_SECRET_VALUE
+
+    cache_age_ms = None
+    if _CACHED_SECRET_FETCHED_AT:
+        cache_age_ms = int((now - _CACHED_SECRET_FETCHED_AT) * 1000)
+    miss_start = time.time()
+    secret_value = _fetch_secret(secret_name, aws_request_id)
+    _CACHED_SECRET_VALUE = secret_value
+    _CACHED_SECRET_FETCHED_AT = time.time()
+    duration_ms = int((_CACHED_SECRET_FETCHED_AT - miss_start) * 1000)
+    _log_json(
+        logging.INFO,
+        "email_adapter_secret_cache_miss",
+        aws_request_id=aws_request_id,
+        secret_name=secret_name,
+        duration_ms=duration_ms,
+        cache_age_ms=cache_age_ms,
     )
     return secret_value
 
@@ -364,7 +407,7 @@ def handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
 
         # TODO: If Lambda runs in a VPC, ensure NAT or a VPC interface endpoint for
         # Secrets Manager; otherwise calls may hang.
-        shared_secret = _fetch_secret(secret_name, aws_request_id)
+        shared_secret = _get_shared_secret(secret_name, aws_request_id)
 
         publish_start = time.time()
         ingress_host = urlparse(ingress_url).hostname or ""
